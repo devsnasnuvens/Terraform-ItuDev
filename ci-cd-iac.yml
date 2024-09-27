@@ -1,0 +1,82 @@
+trigger:
+- none
+variables:
+  - group: ItuDevDemo
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+
+- task: Bash@3
+  displayName: Login in Azure
+  inputs:
+    targetType: inline
+    script: |
+      az login --service-principal -u $(AZURE_USER) -p $(AZURE_SECRET) --tenant $(AZURE_TENANT_ID)
+      az account set --subscription $(AZURE_SUBSCRIPTION)
+
+- task: Bash@3
+  displayName: Create Resource Group, Storage Account and Storage Container
+  inputs:
+    targetType: inline
+    script: |
+      az group create --name $(RESOURCE_GROUP) --location $(LOCATION)
+      az configure --defaults group=$(RESOURCE_GROUP)
+      az storage account create --name $(TFSTATE_STORAGE_ACCOUNT_NAME) --resource-group $(RESOURCE_GROUP) --location $(LOCATION) --sku Standard_LRS --encryption-services blob --https-only true --kind StorageV2 --access-tier Hot --min-tls-version TLS1_2
+      az storage account show -n $(TFSTATE_STORAGE_ACCOUNT_NAME) --query networkRuleSet 
+      az storage account update --name $(TFSTATE_STORAGE_ACCOUNT_NAME) --bypass AzureServices --default-action Allow
+      az storage blob service-properties delete-policy update --account-name $(TFSTATE_STORAGE_ACCOUNT_NAME) --enable true --days-retained 7
+      az storage container create --name $(TFSTATE_CONTAINER_NAME) --account-name $(TFSTATE_STORAGE_ACCOUNT_NAME) --auth-mode login
+
+- task: Bash@3
+  displayName: 'Install Terraform'
+  env:
+    ARM_CLIENT_ID: $(AZURE_USER)
+    ARM_CLIENT_SECRET: $(AZURE_SECRET)
+    ARM_TENANT_ID: $(AZURE_TENANT_ID)
+    ARM_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION)
+  inputs:
+    targetType: 'inline'
+    workingDirectory: "$(System.DefaultWorkingDirectory)/Deployment/IaC"
+    script: |
+      terraform init -backend-config="storage_account_name=$(TFSTATE_STORAGE_ACCOUNT_NAME)" -backend-config="container_name=$(TFSTATE_CONTAINER_NAME)" -backend-config="key=$(TFSTATE_KEY)" -backend-config="resource_group_name=$(RESOURCE_GROUP)"
+
+- task: Bash@3
+  displayName: Terraform Plan
+  env:
+    ARM_CLIENT_ID: $(AZURE_USER)
+    ARM_CLIENT_SECRET: $(AZURE_SECRET)
+    ARM_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION)
+    ARM_TENANT_ID: $(AZURE_TENANT_ID)
+  inputs:
+    targetType: inline
+    workingDirectory: "$(System.DefaultWorkingDirectory)/Deployment/IaC"
+    script: |
+      terraform plan \
+      -var="rg_name=$(RESOURCE_GROUP)" \
+      -var="location=$(LOCATION)" \
+      -var="service_plan_name=$(SERVICE_PLAN_NAME)" \
+      -var="sp_os=$(SP_OS)" \
+      -var="sp_sku=$(SP_SKU)" \
+      -var="webapp_name=$(WEBAPP_NAME)" 
+
+- task: Bash@3
+  displayName: Terraform Apply
+  env:
+    ARM_CLIENT_ID: $(AZURE_USER)
+    ARM_CLIENT_SECRET: $(AZURE_SECRET)
+    ARM_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION)
+    ARM_TENANT_ID: $(AZURE_TENANT_ID)
+  inputs:
+    targetType: inline
+    workingDirectory: "$(System.DefaultWorkingDirectory)/Deployment/IaC"
+    script: |
+      terraform apply -auto-approve \
+      -var="rg_name=$(RESOURCE_GROUP)" \
+      -var="location=$(LOCATION)" \
+      -var="service_plan_name=$(SERVICE_PLAN_NAME)" \
+      -var="sp_os=$(SP_OS)" \
+      -var="sp_sku=$(SP_SKU)" \
+      -var="webapp_name=$(WEBAPP_NAME)" 
+
